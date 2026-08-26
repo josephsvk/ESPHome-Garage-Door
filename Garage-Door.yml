@@ -2,11 +2,12 @@ substitutions:
   # =========================================================
   # ZÁKLAD
   # =========================================================
-  node_name: duko-esp32-s3-0001
-  friendly_name: dusan-garage-v1
+  node_name: !secret node_name
+  friendly_name: !secret friendly_name
 
-  wg_address: !secret garage01_wg_address
-  board: esp32-s3-devkitc-1
+  wg_address: !secret wg_address
+  board: !secret board
+  framework: !secret framework
 
   gate_name: "Garážová brána"
 
@@ -124,7 +125,7 @@ esp32:
   board: ${board}
 
   framework:
-    type: esp-idf
+    type: ${framework}
 
 # =========================================================
 # LOGGER
@@ -189,7 +190,7 @@ wifi:
 
 api:
   encryption:
-    key: !secret garage01_api_key
+    key: !secret api_key
 
   reboot_timeout: 0s
 
@@ -209,7 +210,7 @@ api:
 
 ota:
 - platform: esphome
-  password: !secret garage01_ota_password
+  password: !secret ota_password
   version: 2
 
 # =========================================================
@@ -244,15 +245,15 @@ wireguard:
   address: ${wg_address}
   netmask: 255.255.255.0
 
-  private_key: !secret garage01_wg_private_key
+  private_key: !secret wg_private_key
 
-  peer_endpoint: !secret garage01_wg_endpoint
-  peer_port: !secret garage01_wg_port
+  peer_endpoint: !secret wg_endpoint
+  peer_port: !secret wg_endpoint_port
 
-  peer_public_key: !secret garage01_wg_public_key
+  peer_public_key: !secret wg_peer_public_key
 
   peer_allowed_ips:
-  - 10.84.0.0/24
+  - !secret wg_allowed_ips
 
   peer_persistent_keepalive: 25s
 
