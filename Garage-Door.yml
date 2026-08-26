@@ -2,21 +2,22 @@ substitutions:
   # =========================================================
   # ZÁKLAD
   # =========================================================
-  node_name: duko-esp32-c2-0001
+  node_name: duko-esp32-s3-0001
   friendly_name: dusan-garage-v1
 
-  wg_address: 10.84.0.3
+  wg_address: !secret garage01_wg_address
+  board: esp32-s3-devkitc-1
 
   gate_name: "Garážová brána"
 
   # =========================================================
   # GPIO PINY
   # =========================================================
-  gpio_open: GPIO19
-  gpio_close: GPIO18
-  gpio_stop: GPIO23
-  gpio_closed: GPIO21
-  gpio_dht22: GPIO16
+  gpio_open: GPIO4
+  gpio_close: GPIO5
+  gpio_stop: GPIO6
+  gpio_closed: GPIO7
+  gpio_dht22: GPIO15
 
   # =========================================================
   # ČASY
@@ -32,7 +33,6 @@ substitutions:
   # =========================================================
   relay_inverted: "false"
   sensor_inverted: "true"
-
 
 # =========================================================
 # ESPHOME
@@ -101,7 +101,6 @@ esphome:
             level: WARN
             format: "BOOT: senzor nehlási zatvorené | stav = otvorená / neznáma"
 
-
 # =========================================================
 # ESP32 + OTA ROLLBACK
 # =========================================================
@@ -122,14 +121,10 @@ esphome:
 # =========================================================
 
 esp32:
-  board: esp32dev
+  board: ${board}
 
   framework:
     type: esp-idf
-
-    advanced:
-      enable_ota_rollback: true
-
 
 # =========================================================
 # LOGGER
@@ -147,7 +142,6 @@ logger:
     wifi: INFO
     api: INFO
     wireguard: INFO
-
 
 # =========================================================
 # WIFI
@@ -189,14 +183,13 @@ wifi:
       level: WARN
       format: "WIFI: odpojené"
 
-
 # =========================================================
 # API
 # =========================================================
 
 api:
   encryption:
-    key: !secret test1_wg_api_key
+    key: !secret garage01_api_key
 
   reboot_timeout: 0s
 
@@ -210,16 +203,14 @@ api:
       level: WARN
       format: "API: klient odpojený"
 
-
 # =========================================================
 # OTA
 # =========================================================
 
 ota:
 - platform: esphome
-  password: !secret ota_password
+  password: !secret garage01_ota_password
   version: 2
-
 
 # =========================================================
 # SAFE MODE + POTVRDENIE OTA FIRMWARE
@@ -228,22 +219,12 @@ ota:
 # Firmware sa označí ako úspešný až po 5 minútach
 # normálneho behu.
 #
-# Dôležité:
-#
-# boot_is_good_on_shutdown: false
-#
-# znamená, že reboot spôsobený Wi-Fi watchdogom
-# sa NEPOVAŽUJE za úspešný boot.
-#
 # =========================================================
 
 safe_mode:
   boot_is_good_after: 5min
-  boot_is_good_on_shutdown: false
-
 
 captive_portal:
-
 
 # =========================================================
 # ČAS
@@ -252,7 +233,6 @@ captive_portal:
 time:
 - platform: sntp
   id: sntp_time
-
 
 # =========================================================
 # WIREGUARD
@@ -264,12 +244,12 @@ wireguard:
   address: ${wg_address}
   netmask: 255.255.255.0
 
-  private_key: !secret test1_wg_private_key
+  private_key: !secret garage01_wg_private_key
 
-  peer_endpoint: wg.joseph4lansolo.xyz
-  peer_port: 51822
+  peer_endpoint: !secret garage01_wg_endpoint
+  peer_port: !secret garage01_wg_port
 
-  peer_public_key: !secret vps_wg_public_key
+  peer_public_key: !secret garage01_wg_public_key
 
   peer_allowed_ips:
   - 10.84.0.0/24
@@ -277,7 +257,6 @@ wireguard:
   peer_persistent_keepalive: 25s
 
   reboot_timeout: 0s
-
 
 # =========================================================
 # VNÚTORNÁ LOGIKA BRÁNY
@@ -320,13 +299,11 @@ globals:
   restore_value: yes
   initial_value: '0'
 
-
 # =========================================================
 # SCRIPTY
 # =========================================================
 
 script:
-
 
 # =========================================================
 # ŠTATISTIKA - ZAČIATOK OTVORENEJ RELÁCIE
@@ -358,7 +335,6 @@ script:
           format: "ŠTATISTIKA: otvorená relácia začala | počet otvorení=%u"
           args:
           - 'static_cast<unsigned int>(id(gate_open_count_total))'
-
 
 # =========================================================
 # ŠTATISTIKA - KONIEC OTVORENEJ RELÁCIE
@@ -400,7 +376,6 @@ script:
           args:
           - 'id(gate_last_open_seconds) / 60.0f'
           - 'id(gate_total_open_seconds) / 3600.0f'
-
 
 # =========================================================
 # OPEN SEKVENCA
@@ -452,7 +427,6 @@ script:
           id: garage_gate
           state: OPEN
           current_operation: IDLE
-
 
 # =========================================================
 # MANUÁLNE OTVORENIE
@@ -506,7 +480,6 @@ script:
               state: OPEN
               current_operation: IDLE
 
-
 # =========================================================
 # CLOSE SEKVENCA
 # =========================================================
@@ -542,13 +515,11 @@ script:
 
   - switch.turn_on: relay_close
 
-
 # =========================================================
 # RELÉ
 # =========================================================
 
 switch:
-
 
 # =========================================================
 # OPEN RELÉ
@@ -582,7 +553,6 @@ switch:
       level: WARN
       format: "RELAY OPEN: OFF | pin=${gpio_open}"
 
-
 # =========================================================
 # CLOSE RELÉ
 # =========================================================
@@ -614,7 +584,6 @@ switch:
   - logger.log:
       level: WARN
       format: "RELAY CLOSE: OFF | pin=${gpio_close}"
-
 
 # =========================================================
 # STOP RELÉ
@@ -648,13 +617,11 @@ switch:
       level: WARN
       format: "RELAY STOP: OFF | pin=${gpio_stop}"
 
-
 # =========================================================
 # SENZOR ZATVORENEJ BRÁNY
 # =========================================================
 
 binary_sensor:
-
 
 - platform: gpio
 
@@ -705,7 +672,6 @@ binary_sensor:
 
       - script.execute: gate_manual_open_sequence
 
-
 # =========================================================
 # LOGICKÝ SENZOR OTVORENEJ BRÁNY
 # =========================================================
@@ -729,7 +695,6 @@ binary_sensor:
 
     return false;
 
-
 # =========================================================
 # WIREGUARD STATUS
 # =========================================================
@@ -744,13 +709,11 @@ binary_sensor:
     id: wg_enabled_internal
     internal: true
 
-
 # =========================================================
 # SENZORY
 # =========================================================
 
 sensor:
-
 
 # =========================================================
 # DHT22
@@ -775,7 +738,6 @@ sensor:
     state_class: measurement
 
   update_interval: 60s
-
 
 # =========================================================
 # AKTUÁLNY ČAS OTVORENIA
@@ -810,7 +772,6 @@ sensor:
 
     return (now_s - id(open_session_started_s)) / 60.0f;
 
-
 # =========================================================
 # POSLEDNÉ OTVORENIE
 # =========================================================
@@ -833,7 +794,6 @@ sensor:
 
   lambda: |-
     return id(gate_last_open_seconds) / 60.0f;
-
 
 # =========================================================
 # CELKOVÝ ČAS OTVORENIA
@@ -868,7 +828,6 @@ sensor:
 
     return total_s / 3600.0f;
 
-
 # =========================================================
 # POČET OTVORENÍ
 # =========================================================
@@ -892,7 +851,6 @@ sensor:
   lambda: |-
     return id(gate_open_count_total);
 
-
 # =========================================================
 # POČET CLOSE PRÍKAZOV
 # =========================================================
@@ -915,7 +873,6 @@ sensor:
 
   lambda: |-
     return id(gate_close_count_total);
-
 
 # =========================================================
 # DIAGNOSTIKA LOGIKY
@@ -965,7 +922,6 @@ text_sensor:
         return {"neznámy stav"};
     }
 
-
 # =========================================================
 # HOME ASSISTANT COVER
 # =========================================================
@@ -996,7 +952,6 @@ cover:
     // Všetko ostatné znamená, že brána nie je potvrdene zatvorená.
     return COVER_OPEN;
 
-
   # =======================================================
   # OPEN
   # =======================================================
@@ -1008,8 +963,6 @@ cover:
       format: "COVER: OPEN action prijatá"
 
   - script.execute: gate_open_sequence
-
-
   # =======================================================
   # CLOSE
   # =======================================================
@@ -1021,8 +974,6 @@ cover:
       format: "COVER: CLOSE action prijatá"
 
   - script.execute: gate_close_sequence
-
-
   # =======================================================
   # STOP
   # =======================================================
@@ -1061,13 +1012,11 @@ cover:
           state: OPEN
           current_operation: IDLE
 
-
 # =========================================================
 # TLAČIDLÁ
 # =========================================================
 
 button:
-
 
 # =========================================================
 # RESTART
@@ -1078,7 +1027,6 @@ button:
   name: "${node_name} Restart"
 
   entity_category: diagnostic
-
 
 # =========================================================
 # RESET ŠTATISTÍK

@@ -1,0 +1,19 @@
+substitutions:
+  node_name: duko-esp32-s3-0001
+  friendly_name: dusan-garage-v1
+  board: esp32-s3-devkitc-1
+
+esphome:
+  min_version: 2026.8.1
+
+  project:
+    name: "joseph.garage-door"
+    version: "1.0.0"
+
+packages:
+  garage_door:
+    url: https://github.com/josephsvk/ESPHome-Garade-Door
+    ref: main
+    files:
+    - Garage-Door.yml
+    refresh: always
