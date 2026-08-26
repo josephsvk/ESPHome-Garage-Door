@@ -14,11 +14,11 @@ substitutions:
   # =========================================================
   # GPIO PINY
   # =========================================================
-  gpio_open: GPIO4
-  gpio_close: GPIO5
-  gpio_stop: GPIO6
-  gpio_closed: GPIO7
-  gpio_dht22: GPIO15
+  gpio_open: !secret gpio_open
+  gpio_close: !secret gpio_close
+  gpio_stop: !secret gpio_stop
+  gpio_closed: !secret gpio_closed
+  gpio_dht22: !secret gpio_dht22
 
   # =========================================================
   # ČASY
