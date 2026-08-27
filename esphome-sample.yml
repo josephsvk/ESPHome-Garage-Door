@@ -1,9 +1,5 @@
 esphome:
-  min_version: 2026.8.1
-
-  project:
-    name: "joseph.garage-door"
-    version: "1.0.0"
+  min_version: 2026.8.10"
 
 packages:
   garage_door:
