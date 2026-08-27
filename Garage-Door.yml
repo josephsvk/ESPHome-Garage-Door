@@ -18,16 +18,30 @@ substitutions:
   gpio_close: !secret gpio_close
   gpio_stop: !secret gpio_stop
   gpio_closed: !secret gpio_closed
-  gpio_dht22: !secret gpio_dht22
 
   # =========================================================
   # ČASY
   # =========================================================
+
+  # Dĺžka stlačenia reléového vstupu brány.
   relay_pulse: 700ms
+
+  # Krátka bezpečnostná pauza medzi povelmi relé.
+  relay_interlock_wait: 50ms
+
+  # Debounce fyzického CLOSED senzora.
   sensor_debounce: 150ms
 
-  # Nemáme senzor úplne otvorenej polohy.
+  # Nemáme horný koncový snímač.
+  # Po tomto čase od OPEN predpokladáme,
+  # že pohyb skončil a brána je otvorená.
   assume_open_after: 10s
+
+  # Maximálny čas, počas ktorého budeme
+  # po CLOSE zobrazovať CLOSING.
+  #
+  # Nastav o niečo viac ako reálny čas zatvorenia.
+  close_timeout: 30s
 
   # =========================================================
   # LOGIKA
@@ -43,37 +57,51 @@ esphome:
   name: ${node_name}
   friendly_name: ${friendly_name}
 
+  # =======================================================
+  # BOOT - BEZPEČNÉ VYPNUTIE RELÉ
+  # =======================================================
+
   on_boot:
-    priority: 800
+
+  # Hardware komponenty sú už inicializované,
+  # ale ešte nezačíname určovať stav brány.
+  - priority: 700
     then:
+
     - logger.log:
         level: WARN
-        format: "BOOT: vypínam všetky relé"
+        format: "BOOT: bezpečnostné vypnutie všetkých relé"
+
+    - script.stop: relay_open_pulse
+    - script.stop: relay_close_pulse
+    - script.stop: relay_stop_pulse
 
     - switch.turn_off: relay_open
     - switch.turn_off: relay_close
     - switch.turn_off: relay_stop
 
-    - delay: 500ms
+  # Po inicializácii prakticky všetkých komponentov
+  # synchronizujeme stav podľa fyzického CLOSED senzora.
+  - priority: -100
+    then:
 
     - logger.log:
         level: WARN
-        format: "BOOT: relé vypnuté | OPEN=${gpio_open} CLOSE=${gpio_close} STOP=${gpio_stop} SENSOR=${gpio_closed} inverted=${relay_inverted}"
-
-    - delay: 2s
+        format: "BOOT: synchronizujem stav brány podľa CLOSED senzora"
 
     - if:
         condition:
           binary_sensor.is_on: gate_closed_sensor
 
         then:
+
         - globals.set:
             id: gate_logic_state
             value: '4'
 
         - lambda: |-
             id(open_session_active) = false;
-            id(open_session_started_s) = 0;
+            id(open_session_started_ms) = 0;
 
         - cover.template.publish:
             id: garage_gate
@@ -82,16 +110,19 @@ esphome:
 
         - logger.log:
             level: WARN
-            format: "BOOT: senzor hlási zatvorené | stav = zatvorená potvrdená"
+            format: "BOOT: CLOSED senzor aktívny | brána = ZATVORENÁ"
 
         else:
+
+        # Nevieme, ako dlho bola otvorená pred rebootom.
+        # Od bootu však začneme merať ďalší otvorený čas.
         - globals.set:
             id: gate_logic_state
             value: '0'
 
         - lambda: |-
             id(open_session_active) = true;
-            id(open_session_started_s) = millis() / 1000;
+            id(open_session_started_ms) = millis();
 
         - cover.template.publish:
             id: garage_gate
@@ -100,25 +131,10 @@ esphome:
 
         - logger.log:
             level: WARN
-            format: "BOOT: senzor nehlási zatvorené | stav = otvorená / neznáma"
+            format: "BOOT: CLOSED senzor neaktívny | brána = OTVORENÁ / NEZNÁMA"
 
 # =========================================================
 # ESP32 + OTA ROLLBACK
-# =========================================================
-#
-# Nový firmware sa nepovažuje okamžite za dobrý.
-#
-# Ak sa Wi-Fi nepripojí:
-#   po 2 minútach Wi-Fi komponent vyvolá reboot.
-#
-# Pretože:
-#   boot_is_good_on_shutdown: false
-#
-# normálny reboot nepotvrdí nový firmware.
-#
-# ESP32 bootloader tak môže vykonať OTA rollback na
-# predchádzajúcu funkčnú verziu.
-#
 # =========================================================
 
 esp32:
@@ -139,7 +155,6 @@ logger:
     binary_sensor: DEBUG
     cover: DEBUG
     gpio: DEBUG
-    dht: DEBUG
     wifi: INFO
     api: INFO
     wireguard: INFO
@@ -156,18 +171,8 @@ wifi:
 
   power_save_mode: none
 
-  # =======================================================
-  # OTA ROLLBACK WATCHDOG
-  # =======================================================
-  #
-  # Ak sa ESP počas 2 minút nepripojí k Wi-Fi,
-  # automaticky sa reštartuje.
-  #
-  # Nový firmware ešte nebude označený ako GOOD,
-  # preto môže bootloader vykonať rollback.
-  #
-  # =======================================================
-
+  # Ak sa ESP nepripojí k Wi-Fi,
+  # umožníme watchdog reboot.
   reboot_timeout: 2min
 
   ap:
@@ -214,12 +219,7 @@ ota:
   version: 2
 
 # =========================================================
-# SAFE MODE + POTVRDENIE OTA FIRMWARE
-# =========================================================
-#
-# Firmware sa označí ako úspešný až po 5 minútach
-# normálneho behu.
-#
+# SAFE MODE + OTA ROLLBACK
 # =========================================================
 
 safe_mode:
@@ -262,6 +262,18 @@ wireguard:
 # =========================================================
 # VNÚTORNÁ LOGIKA BRÁNY
 # =========================================================
+#
+# gate_logic_state:
+#
+# 0 = otvorená / neznáma
+# 1 = otvára sa
+# 2 = zatvára sa
+# 4 = zatvorená potvrdená senzorom
+# 5 = STOP / otvorená medzipoloha
+# 6 = otvorená predpokladom
+# 7 = CLOSE timeout - stále nezatvorená
+#
+# =========================================================
 
 globals:
 
@@ -270,15 +282,26 @@ globals:
   restore_value: no
   initial_value: '0'
 
+# =======================================================
+# OTVORENÁ RELÁCIA
+# =======================================================
+
 - id: open_session_active
   type: bool
   restore_value: no
   initial_value: 'false'
 
-- id: open_session_started_s
+# Používame millis(), nie sekundy.
+# uint32_t rozdiel millis() funguje korektne
+# aj cez wrap millis() približne po 49 dňoch.
+- id: open_session_started_ms
   type: uint32_t
   restore_value: no
   initial_value: '0'
+
+# =======================================================
+# ŠTATISTIKY
+# =======================================================
 
 - id: gate_open_count_total
   type: uint32_t
@@ -306,13 +329,120 @@ globals:
 
 script:
 
-# =========================================================
+# =======================================================
+# RELÉ - OPEN IMPULZ
+# =======================================================
+#
+# Samostatný skript zabraňuje problému,
+# keď starý 700 ms timer vypne nový impulz.
+#
+# =======================================================
+
+- id: relay_open_pulse
+  mode: restart
+
+  then:
+
+  - script.stop: relay_close_pulse
+  - script.stop: relay_stop_pulse
+
+  - switch.turn_off: relay_open
+  - switch.turn_off: relay_close
+  - switch.turn_off: relay_stop
+
+  - delay: ${relay_interlock_wait}
+
+  - logger.log:
+      level: WARN
+      format: "RELAY OPEN: ON | pin=${gpio_open} | pulse=${relay_pulse}"
+
+  - switch.turn_on: relay_open
+
+  - delay: ${relay_pulse}
+
+  - switch.turn_off: relay_open
+
+  - logger.log:
+      level: WARN
+      format: "RELAY OPEN: OFF | pin=${gpio_open}"
+
+# =======================================================
+# RELÉ - CLOSE IMPULZ
+# =======================================================
+
+- id: relay_close_pulse
+  mode: restart
+
+  then:
+
+  - script.stop: relay_open_pulse
+  - script.stop: relay_stop_pulse
+
+  - switch.turn_off: relay_open
+  - switch.turn_off: relay_close
+  - switch.turn_off: relay_stop
+
+  - delay: ${relay_interlock_wait}
+
+  - logger.log:
+      level: WARN
+      format: "RELAY CLOSE: ON | pin=${gpio_close} | pulse=${relay_pulse}"
+
+  - switch.turn_on: relay_close
+
+  - delay: ${relay_pulse}
+
+  - switch.turn_off: relay_close
+
+  - logger.log:
+      level: WARN
+      format: "RELAY CLOSE: OFF | pin=${gpio_close}"
+
+# =======================================================
+# RELÉ - STOP IMPULZ
+# =======================================================
+
+- id: relay_stop_pulse
+  mode: restart
+
+  then:
+
+  - script.stop: relay_open_pulse
+  - script.stop: relay_close_pulse
+
+  # Okamžite odstránime prípadný OPEN/CLOSE povel.
+  - switch.turn_off: relay_open
+  - switch.turn_off: relay_close
+  - switch.turn_off: relay_stop
+
+  - delay: ${relay_interlock_wait}
+
+  - logger.log:
+      level: WARN
+      format: "RELAY STOP: ON | pin=${gpio_stop} | pulse=${relay_pulse}"
+
+  - switch.turn_on: relay_stop
+
+  - delay: ${relay_pulse}
+
+  - switch.turn_off: relay_stop
+
+  - logger.log:
+      level: WARN
+      format: "RELAY STOP: OFF | pin=${gpio_stop}"
+
+# =======================================================
 # ŠTATISTIKA - ZAČIATOK OTVORENEJ RELÁCIE
-# =========================================================
+# =======================================================
+#
+# Volá sa pri fyzickom RELEASE CLOSED senzora.
+#
+# Nezávisí od OPEN príkazu.
+#
+# =======================================================
 
 - id: gate_start_open_session
-
-  mode: restart
+  mode: single
 
   then:
 
@@ -324,7 +454,7 @@ script:
 
       - lambda: |-
           id(open_session_active) = true;
-          id(open_session_started_s) = millis() / 1000;
+          id(open_session_started_ms) = millis();
           id(gate_open_count_total) += 1;
 
       - component.update: gate_open_count_sensor
@@ -333,17 +463,22 @@ script:
 
       - logger.log:
           level: WARN
-          format: "ŠTATISTIKA: otvorená relácia začala | počet otvorení=%u"
+          format: "ŠTATISTIKA: CLOSED senzor sa uvoľnil | otvorená relácia začala | počet=%u"
           args:
           - 'static_cast<unsigned int>(id(gate_open_count_total))'
 
-# =========================================================
+# =======================================================
 # ŠTATISTIKA - KONIEC OTVORENEJ RELÁCIE
-# =========================================================
+# =======================================================
+#
+# Volá sa výhradne po fyzickom potvrdení CLOSED.
+#
+# CLOSE príkaz túto reláciu NEUKONČUJE.
+#
+# =======================================================
 
 - id: gate_stop_open_session
-
-  mode: restart
+  mode: single
 
   then:
 
@@ -354,18 +489,17 @@ script:
       then:
 
       - lambda: |-
-          uint32_t now_s = millis() / 1000;
-          uint32_t elapsed_s = 0;
+          uint32_t elapsed_ms =
+              millis() - id(open_session_started_ms);
 
-          if (now_s >= id(open_session_started_s)) {
-            elapsed_s = now_s - id(open_session_started_s);
-          }
+          uint32_t elapsed_s =
+              elapsed_ms / 1000UL;
 
           id(gate_last_open_seconds) = elapsed_s;
           id(gate_total_open_seconds) += elapsed_s;
 
           id(open_session_active) = false;
-          id(open_session_started_s) = 0;
+          id(open_session_started_ms) = 0;
 
       - component.update: gate_current_open_minutes
       - component.update: gate_last_open_minutes
@@ -373,21 +507,21 @@ script:
 
       - logger.log:
           level: WARN
-          format: "ŠTATISTIKA: otvorená relácia skončila | posledné=%.1f min | celkovo=%.2f h"
+          format: "ŠTATISTIKA: CLOSED potvrdené | relácia skončila | posledné=%.1f min | celkovo=%.2f h"
           args:
           - 'id(gate_last_open_seconds) / 60.0f'
           - 'id(gate_total_open_seconds) / 3600.0f'
 
-# =========================================================
+# =======================================================
 # OPEN SEKVENCA
-# =========================================================
+# =======================================================
 
 - id: gate_open_sequence
-
   mode: restart
 
   then:
 
+  # Rušíme opačný predpoklad pohybu.
   - script.stop: gate_close_sequence
   - script.stop: gate_manual_open_sequence
 
@@ -397,20 +531,24 @@ script:
 
   - logger.log:
       level: WARN
-      format: "LOGIKA: otváranie spustené | po ${assume_open_after} nastavím otvorené"
+      format: "LOGIKA: OPEN | otváranie spustené"
 
   - cover.template.publish:
       id: garage_gate
       state: OPEN
       current_operation: OPENING
 
-  - switch.turn_on: relay_open
+  - script.execute: relay_open_pulse
 
+  # Nemáme OPEN koncový snímač.
   - delay: ${assume_open_after}
 
   - if:
       condition:
-        lambda: 'return id(gate_logic_state) == 1;'
+        lambda: |-
+          return
+            id(gate_logic_state) == 1 &&
+            !id(gate_closed_sensor).state;
 
       then:
 
@@ -420,28 +558,32 @@ script:
 
       - logger.log:
           level: WARN
-          format: "LOGIKA: ${assume_open_after} od OPEN | nastavujem OTVORENÉ PREDPOKLADOM"
-
-      - script.execute: gate_start_open_session
+          format: "LOGIKA: OPEN timeout ${assume_open_after} | nastavujem OTVORENÉ PREDPOKLADOM"
 
       - cover.template.publish:
           id: garage_gate
           state: OPEN
           current_operation: IDLE
 
-# =========================================================
-# MANUÁLNE OTVORENIE
-# =========================================================
+# =======================================================
+# MANUÁLNE / EXTERNÉ OTVORENIE
+# =======================================================
+#
+# CLOSED senzor sa uvoľnil bez aktívneho ESP OPEN.
+#
+# =======================================================
 
 - id: gate_manual_open_sequence
-
   mode: restart
 
   then:
 
   - if:
       condition:
-        lambda: 'return id(gate_logic_state) != 1 && id(gate_logic_state) != 2;'
+        lambda: |-
+          return
+            id(gate_logic_state) != 1 &&
+            id(gate_logic_state) != 2;
 
       then:
 
@@ -451,7 +593,7 @@ script:
 
       - logger.log:
           level: WARN
-          format: "LOGIKA: senzor sa uvoľnil mimo ESP OPEN | predpokladám manuálne otváranie"
+          format: "LOGIKA: CLOSED senzor sa uvoľnil mimo ESP pohybu | predpokladám manuálne/external OPEN"
 
       - cover.template.publish:
           id: garage_gate
@@ -462,7 +604,10 @@ script:
 
       - if:
           condition:
-            lambda: 'return id(gate_logic_state) == 1;'
+            lambda: |-
+              return
+                id(gate_logic_state) == 1 &&
+                !id(gate_closed_sensor).state;
 
           then:
 
@@ -472,62 +617,119 @@ script:
 
           - logger.log:
               level: WARN
-              format: "LOGIKA: ${assume_open_after} od uvoľnenia senzora | nastavujem OTVORENÉ PREDPOKLADOM"
-
-          - script.execute: gate_start_open_session
+              format: "LOGIKA: manuálne otvorenie | po ${assume_open_after} nastavujem OTVORENÉ PREDPOKLADOM"
 
           - cover.template.publish:
               id: garage_gate
               state: OPEN
               current_operation: IDLE
 
-# =========================================================
+# =======================================================
 # CLOSE SEKVENCA
-# =========================================================
+# =======================================================
 
 - id: gate_close_sequence
-
   mode: restart
 
   then:
 
-  - script.stop: gate_open_sequence
-  - script.stop: gate_manual_open_sequence
+  # Ak fyzický senzor už tvrdí CLOSED,
+  # neposielame zbytočne povel do pohonu.
+  - if:
+      condition:
+        binary_sensor.is_on: gate_closed_sensor
 
-  - script.execute: gate_stop_open_session
+      then:
 
-  - lambda: |-
-      id(gate_close_count_total) += 1;
+      - globals.set:
+          id: gate_logic_state
+          value: '4'
 
-  - component.update: gate_close_count_sensor
+      - cover.template.publish:
+          id: garage_gate
+          state: CLOSED
+          current_operation: IDLE
 
-  - globals.set:
-      id: gate_logic_state
-      value: '2'
+      - logger.log:
+          level: WARN
+          format: "LOGIKA: CLOSE ignorovaný | brána je už fyzicky ZATVORENÁ"
 
-  - logger.log:
-      level: WARN
-      format: "LOGIKA: zatváranie spustené | čakám na potvrdenie fyzickým senzorom"
+      else:
 
-  - cover.template.publish:
-      id: garage_gate
-      state: OPEN
-      current_operation: CLOSING
+      - script.stop: gate_open_sequence
+      - script.stop: gate_manual_open_sequence
 
-  - switch.turn_on: relay_close
+      # POZOR:
+      # otvorenú reláciu tu NEUKONČUJEME.
+      # Brána je stále otvorená až do CLOSED senzora.
+
+      - lambda: |-
+          id(gate_close_count_total) += 1;
+
+      - component.update: gate_close_count_sensor
+
+      - globals.set:
+          id: gate_logic_state
+          value: '2'
+
+      - logger.log:
+          level: WARN
+          format: "LOGIKA: CLOSE | zatváranie spustené | čakám na fyzický CLOSED senzor"
+
+      - cover.template.publish:
+          id: garage_gate
+          state: OPEN
+          current_operation: CLOSING
+
+      - script.execute: relay_close_pulse
+
+      # =================================================
+      # CLOSE WATCHDOG
+      # =================================================
+
+      - delay: ${close_timeout}
+
+      - if:
+          condition:
+            lambda: |-
+              return
+                id(gate_logic_state) == 2 &&
+                !id(gate_closed_sensor).state;
+
+          then:
+
+          - globals.set:
+              id: gate_logic_state
+              value: '7'
+
+          - cover.template.publish:
+              id: garage_gate
+              state: OPEN
+              current_operation: IDLE
+
+          - logger.log:
+              level: ERROR
+              format: "LOGIKA: CLOSE TIMEOUT ${close_timeout} | CLOSED senzor nepotvrdil zatvorenie"
 
 # =========================================================
 # RELÉ
 # =========================================================
+#
+# Softvérový interlock je druhá bezpečnostná vrstva.
+#
+# Primárna logika už relé vypína pred každým ďalším
+# povelom, ale interlock zabráni súčasnému OPEN/CLOSE/STOP
+# aj pri chybe vyššej logiky.
+#
+# =========================================================
 
 switch:
 
-# =========================================================
+# =======================================================
 # OPEN RELÉ
-# =========================================================
+# =======================================================
 
 - platform: gpio
-
   id: relay_open
 
   internal: true
@@ -538,28 +740,18 @@ switch:
     number: ${gpio_open}
     inverted: ${relay_inverted}
 
-  on_turn_on:
+  interlock: &relay_interlock_group
+    - relay_open
+    - relay_close
+    - relay_stop
 
-  - logger.log:
-      level: WARN
-      format: "RELAY OPEN: ON | pin=${gpio_open} | inverted=${relay_inverted} | pulse=${relay_pulse}"
+  interlock_wait_time: ${relay_interlock_wait}
 
-  - delay: ${relay_pulse}
-
-  - switch.turn_off: relay_open
-
-  on_turn_off:
-
-  - logger.log:
-      level: WARN
-      format: "RELAY OPEN: OFF | pin=${gpio_open}"
-
-# =========================================================
+# =======================================================
 # CLOSE RELÉ
-# =========================================================
+# =======================================================
 
 - platform: gpio
-
   id: relay_close
 
   internal: true
@@ -570,28 +762,15 @@ switch:
     number: ${gpio_close}
     inverted: ${relay_inverted}
 
-  on_turn_on:
+  interlock: *relay_interlock_group
 
-  - logger.log:
-      level: WARN
-      format: "RELAY CLOSE: ON | pin=${gpio_close} | inverted=${relay_inverted} | pulse=${relay_pulse}"
+  interlock_wait_time: ${relay_interlock_wait}
 
-  - delay: ${relay_pulse}
-
-  - switch.turn_off: relay_close
-
-  on_turn_off:
-
-  - logger.log:
-      level: WARN
-      format: "RELAY CLOSE: OFF | pin=${gpio_close}"
-
-# =========================================================
+# =======================================================
 # STOP RELÉ
-# =========================================================
+# =======================================================
 
 - platform: gpio
-
   id: relay_stop
 
   internal: true
@@ -602,21 +781,9 @@ switch:
     number: ${gpio_stop}
     inverted: ${relay_inverted}
 
-  on_turn_on:
+  interlock: *relay_interlock_group
 
-  - logger.log:
-      level: WARN
-      format: "RELAY STOP: ON | pin=${gpio_stop} | inverted=${relay_inverted} | pulse=${relay_pulse}"
-
-  - delay: ${relay_pulse}
-
-  - switch.turn_off: relay_stop
-
-  on_turn_off:
-
-  - logger.log:
-      level: WARN
-      format: "RELAY STOP: OFF | pin=${gpio_stop}"
+  interlock_wait_time: ${relay_interlock_wait}
 
 # =========================================================
 # SENZOR ZATVORENEJ BRÁNY
@@ -632,18 +799,37 @@ binary_sensor:
 
   pin:
     number: ${gpio_closed}
-    mode: INPUT_PULLUP
+
+    mode:
+      input: true
+      pullup: true
+
     inverted: ${sensor_inverted}
 
   filters:
   - delayed_on_off: ${sensor_debounce}
 
+  # =====================================================
+  # FYZICKY ZATVORENÁ
+  # =====================================================
+
   on_press:
 
+  # CLOSED senzor má absolútnu prioritu.
   - script.stop: gate_close_sequence
   - script.stop: gate_open_sequence
   - script.stop: gate_manual_open_sequence
 
+  # Ukončíme všetky prípadné relé impulzy.
+  - script.stop: relay_open_pulse
+  - script.stop: relay_close_pulse
+  - script.stop: relay_stop_pulse
+
+  - switch.turn_off: relay_open
+  - switch.turn_off: relay_close
+  - switch.turn_off: relay_stop
+
+  # Otvorený čas končí AŽ TERAZ.
   - script.execute: gate_stop_open_session
 
   - globals.set:
@@ -652,30 +838,50 @@ binary_sensor:
 
   - logger.log:
       level: WARN
-      format: "SENZOR: ZATVORENÁ POTVRDENÁ | pin=${gpio_closed} | inverted=${sensor_inverted}"
+      format: "SENZOR: ZATVORENÁ POTVRDENÁ | pin=${gpio_closed}"
 
   - cover.template.publish:
       id: garage_gate
       state: CLOSED
       current_operation: IDLE
 
+  # =====================================================
+  # BRÁNA OPUSTILA CLOSED POLOHU
+  # =====================================================
+
   on_release:
 
   - logger.log:
       level: WARN
-      format: "SENZOR: BRÁNA UŽ NIE JE ZATVORENÁ | pin=${gpio_closed} | inverted=${sensor_inverted}"
+      format: "SENZOR: CLOSED sa uvoľnil | brána už nie je zatvorená"
 
+  # Toto je jediný správny fyzický začiatok
+  # merania otvoreného času.
+  - script.execute: gate_start_open_session
+
+  # Ak sme uvoľnenie CLOSED senzora neočakávali
+  # ako súčasť ESP OPEN/CLOSE, ide o manuálny
+  # alebo externý pohyb.
   - if:
       condition:
-        lambda: 'return id(gate_logic_state) != 1 && id(gate_logic_state) != 2;'
+        lambda: |-
+          return
+            id(gate_logic_state) != 1 &&
+            id(gate_logic_state) != 2;
 
       then:
 
       - script.execute: gate_manual_open_sequence
 
-# =========================================================
-# LOGICKÝ SENZOR OTVORENEJ BRÁNY
-# =========================================================
+# =======================================================
+# LOGICKÝ SENZOR
+# =======================================================
+#
+# ON = fyzický CLOSED senzor nie je aktívny.
+#
+# Nezávisí od interného predpokladu pohybu.
+#
+# =======================================================
 
 - platform: template
 
@@ -686,19 +892,11 @@ binary_sensor:
   device_class: garage_door
 
   lambda: |-
-    if (id(gate_closed_sensor).state) {
-      return false;
-    }
+    return !id(gate_closed_sensor).state;
 
-    if (id(gate_logic_state) == 0 || id(gate_logic_state) == 6) {
-      return true;
-    }
-
-    return false;
-
-# =========================================================
+# =======================================================
 # WIREGUARD STATUS
-# =========================================================
+# =======================================================
 
 - platform: wireguard
 
@@ -716,33 +914,9 @@ binary_sensor:
 
 sensor:
 
-# =========================================================
-# DHT22
-# =========================================================
-
-- platform: dht
-
-  pin: ${gpio_dht22}
-
-  model: DHT22
-
-  temperature:
-    id: dht22_temperature
-    name: "${friendly_name} DHT22 teplota"
-    accuracy_decimals: 1
-    state_class: measurement
-
-  humidity:
-    id: dht22_humidity
-    name: "${friendly_name} DHT22 vlhkosť"
-    accuracy_decimals: 1
-    state_class: measurement
-
-  update_interval: 60s
-
-# =========================================================
+# =======================================================
 # AKTUÁLNY ČAS OTVORENIA
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -765,17 +939,14 @@ sensor:
       return 0.0f;
     }
 
-    uint32_t now_s = millis() / 1000;
+    uint32_t elapsed_ms =
+        millis() - id(open_session_started_ms);
 
-    if (now_s < id(open_session_started_s)) {
-      return 0.0f;
-    }
+    return elapsed_ms / 60000.0f;
 
-    return (now_s - id(open_session_started_s)) / 60.0f;
-
-# =========================================================
+# =======================================================
 # POSLEDNÉ OTVORENIE
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -796,9 +967,9 @@ sensor:
   lambda: |-
     return id(gate_last_open_seconds) / 60.0f;
 
-# =========================================================
+# =======================================================
 # CELKOVÝ ČAS OTVORENIA
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -817,21 +988,22 @@ sensor:
   update_interval: 30s
 
   lambda: |-
-    uint32_t total_s = id(gate_total_open_seconds);
+    uint32_t total_s =
+        id(gate_total_open_seconds);
 
     if (id(open_session_active)) {
-      uint32_t now_s = millis() / 1000;
 
-      if (now_s >= id(open_session_started_s)) {
-        total_s += now_s - id(open_session_started_s);
-      }
+      uint32_t elapsed_ms =
+          millis() - id(open_session_started_ms);
+
+      total_s += elapsed_ms / 1000UL;
     }
 
     return total_s / 3600.0f;
 
-# =========================================================
+# =======================================================
 # POČET OTVORENÍ
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -852,9 +1024,9 @@ sensor:
   lambda: |-
     return id(gate_open_count_total);
 
-# =========================================================
+# =======================================================
 # POČET CLOSE PRÍKAZOV
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -889,9 +1061,11 @@ text_sensor:
 
   entity_category: diagnostic
 
-  update_interval: 1s
+  # Pôvodne 1s spôsobovalo zbytočný spam v logu.
+  update_interval: 5s
 
   lambda: |-
+    
     if (id(gate_closed_sensor).state) {
       return {"zatvorená potvrdená senzorom"};
     }
@@ -907,9 +1081,6 @@ text_sensor:
       case 2:
         return {"zatvára sa - čakám na senzor"};
 
-      case 3:
-        return {"neplatný starý stav - čaká sa na fyzický senzor"};
-
       case 4:
         return {"zatvorená potvrdená senzorom"};
 
@@ -918,6 +1089,9 @@ text_sensor:
 
       case 6:
         return {"otvorená predpokladom"};
+
+      case 7:
+        return {"chyba - CLOSE timeout"};
 
       default:
         return {"neznámy stav"};
@@ -937,25 +1111,21 @@ cover:
 
   device_class: garage
 
+  # Nemáme horný koncový snímač.
   assumed_state: true
 
+  # CLOSED senzor je jediný fyzický zdroj pravdy.
   lambda: |-
-    // Fyzický senzor má najvyššiu prioritu.
+    
     if (id(gate_closed_sensor).state) {
       return COVER_CLOSED;
     }
 
-    // Stav 4 znamená fyzicky potvrdené CLOSED.
-    if (id(gate_logic_state) == 4) {
-      return COVER_CLOSED;
-    }
-
-    // Všetko ostatné znamená, že brána nie je potvrdene zatvorená.
     return COVER_OPEN;
 
-  # =======================================================
+  # =====================================================
   # OPEN
-  # =======================================================
+  # =====================================================
 
   open_action:
 
@@ -964,9 +1134,10 @@ cover:
       format: "COVER: OPEN action prijatá"
 
   - script.execute: gate_open_sequence
-  # =======================================================
+
+  # =====================================================
   # CLOSE
-  # =======================================================
+  # =====================================================
 
   close_action:
 
@@ -975,9 +1146,10 @@ cover:
       format: "COVER: CLOSE action prijatá"
 
   - script.execute: gate_close_sequence
-  # =======================================================
+
+  # =====================================================
   # STOP
-  # =======================================================
+  # =====================================================
 
   stop_action:
 
@@ -985,15 +1157,14 @@ cover:
       level: WARN
       format: "COVER: STOP action prijatá"
 
+  # Rušíme všetky predpoklady pohybu.
   - script.stop: gate_open_sequence
   - script.stop: gate_close_sequence
   - script.stop: gate_manual_open_sequence
 
-  - globals.set:
-      id: gate_logic_state
-      value: '5'
-
-  - switch.turn_on: relay_stop
+  # STOP pulse skript zároveň okamžite vypne
+  # prípadné OPEN/CLOSE relé.
+  - script.execute: relay_stop_pulse
 
   - if:
       condition:
@@ -1001,12 +1172,22 @@ cover:
 
       then:
 
+      - globals.set:
+          id: gate_logic_state
+          value: '4'
+
       - cover.template.publish:
           id: garage_gate
           state: CLOSED
           current_operation: IDLE
 
       else:
+
+      # Otvorená relácia pokračuje.
+      # STOP neznamená zatvorenú bránu.
+      - globals.set:
+          id: gate_logic_state
+          value: '5'
 
       - cover.template.publish:
           id: garage_gate
@@ -1019,9 +1200,9 @@ cover:
 
 button:
 
-# =========================================================
+# =======================================================
 # RESTART
-# =========================================================
+# =======================================================
 
 - platform: restart
 
@@ -1029,9 +1210,9 @@ button:
 
   entity_category: diagnostic
 
-# =========================================================
+# =======================================================
 # RESET ŠTATISTÍK
-# =========================================================
+# =======================================================
 
 - platform: template
 
@@ -1044,13 +1225,16 @@ button:
   on_press:
 
   - lambda: |-
+      
       id(gate_open_count_total) = 0;
       id(gate_close_count_total) = 0;
       id(gate_total_open_seconds) = 0;
       id(gate_last_open_seconds) = 0;
 
+      # Ak je brána práve otvorená,
+      # po resete začíname merať novú reláciu od nuly.
       if (id(open_session_active)) {
-        id(open_session_started_s) = millis() / 1000;
+        id(open_session_started_ms) = millis();
       }
 
   - component.update: gate_open_count_sensor
