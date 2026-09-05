@@ -1,0 +1,28 @@
+# Optional Home Assistant template cover with a dynamic dashboard icon.
+#
+# Adjust cover.garazova_brana if Home Assistant generated a different
+# entity ID for the ESPHome cover from Garage-Door.yml.
+template:
+  - cover:
+      - name: "Garážová brána"
+        unique_id: garazova_brana_dynamic_icon
+        device_class: garage
+        state: "{{ states('cover.garazova_brana') }}"
+        icon: >-
+          {% if is_state('cover.garazova_brana', 'closed') %}
+            mdi:garage-lock
+          {% else %}
+            mdi:garage-open
+          {% endif %}
+        open_cover:
+          action: cover.open_cover
+          target:
+            entity_id: cover.garazova_brana
+        close_cover:
+          action: cover.close_cover
+          target:
+            entity_id: cover.garazova_brana
+        stop_cover:
+          action: cover.stop_cover
+          target:
+            entity_id: cover.garazova_brana

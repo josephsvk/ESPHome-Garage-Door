@@ -630,6 +630,8 @@ binary_sensor:
 
   name: "${gate_name} zatvorená"
 
+  icon: "mdi:garage-lock"
+
   pin:
     number: ${gpio_closed}
     mode: INPUT_PULLUP
@@ -681,20 +683,14 @@ binary_sensor:
 
   id: gate_open_logical_binary
 
-  name: "${gate_name} otvorená logicky"
+  name: "${gate_name} otvorená⁄neuzavretá"
 
   device_class: garage_door
 
+  icon: "mdi:garage-open"
+
   lambda: |-
-    if (id(gate_closed_sensor).state) {
-      return false;
-    }
-
-    if (id(gate_logic_state) == 0 || id(gate_logic_state) == 6) {
-      return true;
-    }
-
-    return false;
+    return !id(gate_closed_sensor).state;
 
 # =========================================================
 # WIREGUARD STATUS
